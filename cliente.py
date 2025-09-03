@@ -1,65 +1,68 @@
+# cliente.py
 import socket
 import threading
+import sys
 
-def receive_messages(client_socket):
-    """
-    Escuta por mensagens do servidor e as imprime no console.
-    Executa em uma loop infinito até que a conexão seja encerrada.
-    """
+HOST = "127.0.0.1"
+PORT = 12345
+
+def receiver(sock: socket.socket):
     while True:
         try:
-            message = client_socket.recv(1024).decode('utf-8')
-            if not message:
-                print("\n[AVISO] O servidor encerrou a conexão.")
+            data = sock.recv(4096)
+            if not data:
+                print("\n[AVISO] Conexão encerrada pelo servidor.")
                 break
-            
-            print(f"\rServidor: {message}\nVocê: ", end="")
-
-        except ConnectionResetError:
-            print("\n[ERRO] A conexão foi perdida com o servidor.")
+            texto = data.decode("utf-8", errors="ignore")
+            print("\r" + texto, end="")
+            print("Você: ", end="", flush=True)
+        except Exception:
             break
-        except Exception as e:
-            print(f"\n[ERRO] Ocorreu um erro: {e}")
-            break
-            
-    client_socket.close()
+    try:
+        sock.close()
+    except Exception:
+        pass
 
 
 def main():
-    HOST = '127.0.0.1'  
-    PORT = 12345        
-
-    
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-    
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        client_socket.connect((HOST, PORT))
-        print(f"[CONECTADO] Conectado ao servidor em {HOST}:{PORT}")
-        print("Digite 'sair' a qualquer momento para encerrar a conexão.")
+        sock.connect((HOST, PORT))
     except ConnectionRefusedError:
-        print("[FALHA] Não foi possível se conectar ao servidor. Verifique se ele está em execução.")
-        return 
+        print("[ERRO] Não foi possível conectar ao servidor.")
+        return
 
-   
-    receive_thread = threading.Thread(target=receive_messages, args=(client_socket,), daemon=True)
-    receive_thread.start()
+    print(f"[OK] Conectado a {HOST}:{PORT}")
 
     
+    t = threading.Thread(target=receiver, args=(sock,), daemon=True)
+    t.start()
+
     try:
+        first_line = sock.recv(4096).decode("utf-8", errors="ignore")
+        sys.stdout.write(first_line)
+        sys.stdout.flush()
+        nome = input().strip()
+        sock.sendall(nome.encode("utf-8"))
+
         while True:
-            message = input("Você: ")
-            
-            if message.lower() == 'sair':
-                print("[DESCONECTANDO] Encerrando a conexão...")
+            msg = input("Você: ").strip()
+            if not msg:
+                continue
+            sock.sendall(msg.encode("utf-8"))
+            if msg.lower().startswith("/quit") or msg.lower() == "sair":
                 break
-
-            client_socket.send(message.encode('utf-8'))
-
     except KeyboardInterrupt:
-        print("\n[DESCONECTANDO] Encerrando a conexão...")
+        try:
+            sock.sendall("/quit".encode("utf-8"))
+        except Exception:
+            pass
     finally:
-        client_socket.close()
+        try:
+            sock.close()
+        except Exception:
+            pass
+
 
 if __name__ == "__main__":
     main()
