@@ -5,23 +5,46 @@ import threading
 HOST = "127.0.0.1"
 PORT = 12345
 
-salas = {  
+HEADER_LEN = 4
+MAX_MSG = 1 << 20  # 1 MB
+
+salas: dict[str, set[socket.socket]] = {
     "#geral": set(),
     "#jogos": set(),
 }
-clientes = {}  
+clientes: dict[socket.socket, dict] = {}
 lock_salas = threading.Lock()
 
+def send_msg(sock: socket.socket, data: bytes) -> None:
+    size = len(data).to_bytes(HEADER_LEN, "big")
+    sock.sendall(size + data)
 
-
-def enviar(sock, texto: str):
+def enviar(sock: socket.socket, texto: str):
     try:
-        sock.sendall((texto + "\n").encode("utf-8"))
+        send_msg(sock, texto.encode("utf-8"))
     except Exception:
-        pass  
+        pass  # conexão pode já estar fechada
 
+def recv_exactly(sock: socket.socket, n: int) -> bytes | None:
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            return None
+        buf += chunk
+    return bytes(buf)
 
-def broadcast(nome_sala: str, mensagem: str, excluir=None):
+def recv_msg(sock: socket.socket) -> bytes | None:
+    header = recv_exactly(sock, HEADER_LEN)
+    if header is None:
+        return None
+    size = int.from_bytes(header, "big")
+    if size < 0 or size > MAX_MSG:
+        return None
+    payload = recv_exactly(sock, size)
+    return payload
+
+def broadcast(nome_sala: str, mensagem: str, excluir: socket.socket | None = None):
     """Envia a 'mensagem' para todos da sala 'nome_sala', exceto 'excluir'."""
     with lock_salas:
         destinatarios = list(salas.get(nome_sala, set()))
@@ -30,8 +53,7 @@ def broadcast(nome_sala: str, mensagem: str, excluir=None):
             continue
         enviar(s, mensagem)
 
-
-def mover_para_sala(sock, nova_sala: str):
+def mover_para_sala(sock: socket.socket, nova_sala: str):
     """Remove o cliente da sala atual (se houver) e adiciona na nova_sala."""
     with lock_salas:
         info = clientes.get(sock)
@@ -41,7 +63,6 @@ def mover_para_sala(sock, nova_sala: str):
         if sala_atual and sala_atual in salas and sock in salas[sala_atual]:
             salas[sala_atual].remove(sock)
 
-        # cria sala se não existir
         if nova_sala not in salas:
             salas[nova_sala] = set()
 
@@ -51,14 +72,10 @@ def mover_para_sala(sock, nova_sala: str):
     enviar(sock, f"[SYS] Você entrou em {nova_sala}.")
     broadcast(nova_sala, f"[SYS] {info['nome']} entrou na sala.", excluir=sock)
 
-
-def listar_salas():
+def listar_salas() -> str:
     with lock_salas:
-        linhas = []
-        for nome, membros in salas.items():
-            linhas.append(f"{nome} ({len(membros)} conectado(s))")
+        linhas = [f"{nome} ({len(membros)} conectado(s))" for nome, membros in salas.items()]
         return "\n".join(linhas) if linhas else "(sem salas)"
-
 
 class ClientThread(threading.Thread):
     def __init__(self, client_socket: socket.socket, client_address):
@@ -69,10 +86,17 @@ class ClientThread(threading.Thread):
     def run(self):
         sock = self.client_socket
         addr = self.client_address
+        info = None
 
         try:
             enviar(sock, "[SYS] Conectado ao servidor. Informe seu nome de usuário:")
-            nome = sock.recv(1024).decode("utf-8").strip()
+            nome_bytes = recv_msg(sock)
+            if not nome_bytes:
+                enviar(sock, "[SYS] Nome inválido. Encerrando.")
+                sock.close()
+                return
+
+            nome = nome_bytes.decode("utf-8", errors="ignore").strip()
             if not nome:
                 enviar(sock, "[SYS] Nome inválido. Encerrando.")
                 sock.close()
@@ -80,21 +104,19 @@ class ClientThread(threading.Thread):
 
             with lock_salas:
                 clientes[sock] = {"nome": nome, "sala": None}
+                info = clientes[sock]
 
-            enviar(sock, "[SYS] Bem-vindo, "
-                         f"{nome}! Use /join <sala>, /list, /quit. Padrão: #geral")
+            enviar(sock, f"[SYS] Bem-vindo, {nome}! Use /join <sala>, /list, /quit. Padrão: #geral")
             mover_para_sala(sock, "#geral")
 
-            # Loop principal
             while True:
-                data = sock.recv(1024)
-                if not data:
+                data = recv_msg(sock)
+                if data is None:
                     break
-                msg = data.decode("utf-8").strip()
+                msg = data.decode("utf-8", errors="ignore").strip()
                 if not msg:
                     continue
 
-                # comandos
                 if msg.startswith("/"):
                     partes = msg.split(maxsplit=1)
                     cmd = partes[0].lower()
@@ -121,11 +143,9 @@ class ClientThread(threading.Thread):
                         break
 
                     else:
-                        enviar(sock, "[SYS] Comando não reconhecido. "
-                                     "Use /join, /list, /quit.")
-                    continue  # prossiga pro próximo loop
+                        enviar(sock, "[SYS] Comando não reconhecido. Use /join, /list, /quit.")
+                    continue
 
-                # mensagem normal -> broadcast na sala atual
                 info = clientes.get(sock)
                 if not info or not info.get("sala"):
                     enviar(sock, "[SYS] Você não está em nenhuma sala. Use /join <sala>.")
@@ -138,13 +158,13 @@ class ClientThread(threading.Thread):
         except (ConnectionResetError, ConnectionAbortedError):
             pass
         finally:
-            
             with lock_salas:
                 info = clientes.pop(sock, None)
                 if info:
                     sala = info.get("sala")
                     if sala in salas and sock in salas[sala]:
                         salas[sala].remove(sock)
+                # remove salas vazias (exceto padrões)
                 for sala_nome in list(salas.keys()):
                     if sala_nome not in ("#geral", "#jogos") and len(salas[sala_nome]) == 0:
                         salas.pop(sala_nome, None)
@@ -158,9 +178,10 @@ class ClientThread(threading.Thread):
                 pass
             print(f"[CONEXÃO ENCERRADA] {addr} desconectou.")
 
-
 def main():
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # Opcional: reutilizar porta rapidamente em desenvolvimento
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_socket.bind((HOST, PORT))
     server_socket.listen()
     print(f"[ESCUTANDO] Servidor em {HOST}:{PORT}")
@@ -174,7 +195,6 @@ def main():
         print("\n[SYS] Encerrando servidor...")
     finally:
         server_socket.close()
-
 
 if __name__ == "__main__":
     main()

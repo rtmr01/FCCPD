@@ -6,15 +6,45 @@ import sys
 HOST = "127.0.0.1"
 PORT = 12345
 
+HEADER_LEN = 4
+MAX_MSG = 1 << 20  # 1 MB de limite defensivo
+
+def send_msg(sock: socket.socket, data: bytes) -> None:
+    size = len(data).to_bytes(HEADER_LEN, "big")
+    sock.sendall(size + data)
+
+def recv_exactly(sock: socket.socket, n: int) -> bytes | None:
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            return None
+        buf += chunk
+    return bytes(buf)
+
+def recv_msg(sock: socket.socket) -> bytes | None:
+    header = recv_exactly(sock, HEADER_LEN)
+    if header is None:
+        return None
+    size = int.from_bytes(header, "big")
+    if size < 0 or size > MAX_MSG:
+        # tamanho inválido ou abusivo
+        return None
+    payload = recv_exactly(sock, size)
+    return payload
+
 def receiver(sock: socket.socket):
     while True:
         try:
-            data = sock.recv(4096)
-            if not data:
+            data = recv_msg(sock)
+            if data is None:
                 print("\n[AVISO] Conexão encerrada pelo servidor.")
                 break
             texto = data.decode("utf-8", errors="ignore")
-            print("\r" + texto, end="")
+            # reposiciona o prompt
+            sys.stdout.write("\r" + " " * 200 + "\r")
+            sys.stdout.flush()
+            print(texto)
             print("Você: ", end="", flush=True)
         except Exception:
             break
@@ -22,7 +52,6 @@ def receiver(sock: socket.socket):
         sock.close()
     except Exception:
         pass
-
 
 def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -34,27 +63,30 @@ def main():
 
     print(f"[OK] Conectado a {HOST}:{PORT}")
 
-    
     t = threading.Thread(target=receiver, args=(sock,), daemon=True)
     t.start()
 
     try:
-        first_line = sock.recv(4096).decode("utf-8", errors="ignore")
-        sys.stdout.write(first_line)
+        # Handshake: servidor pergunta o nome
+        first = recv_msg(sock)
+        if first is None:
+            print("[ERRO] Servidor encerrou a conexão.")
+            return
+        sys.stdout.write(first.decode("utf-8", errors="ignore"))
         sys.stdout.flush()
         nome = input().strip()
-        sock.sendall(nome.encode("utf-8"))
+        send_msg(sock, nome.encode("utf-8"))
 
         while True:
             msg = input("Você: ").strip()
             if not msg:
                 continue
-            sock.sendall(msg.encode("utf-8"))
+            send_msg(sock, msg.encode("utf-8"))
             if msg.lower().startswith("/quit") or msg.lower() == "sair":
                 break
     except KeyboardInterrupt:
         try:
-            sock.sendall("/quit".encode("utf-8"))
+            send_msg(sock, b"/quit")
         except Exception:
             pass
     finally:
@@ -62,7 +94,6 @@ def main():
             sock.close()
         except Exception:
             pass
-
 
 if __name__ == "__main__":
     main()

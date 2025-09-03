@@ -1,7 +1,6 @@
 Sistema de Chat Concorrente com Salas
 Este projeto implementa um sistema de chat distribuído em Python, utilizando Sockets para a comunicação em rede e Threads para gerenciar múltiplos clientes simultaneamente. O sistema suporta a criação dinâmica de salas de chat e utiliza threading.Lock para garantir a sincronização e evitar condições de corrida no acesso a recursos compartilhados.
 
-Funcionalidades
 Servidor Multithread: Capaz de gerenciar múltiplas conexões de clientes de forma concorrente.
 
 Salas de Chat Dinâmicas: Crie ou entre em salas de chat existentes usando um comando simples.
@@ -11,6 +10,8 @@ Isolamento de Mensagens: Mensagens enviadas em uma sala são visíveis apenas pa
 Comandos Intuitivos: Interface baseada em comandos simples para interagir com o sistema.
 
 Sincronização Segura: Uso de Lock para garantir que as operações em recursos compartilhados (como a lista de salas e clientes) sejam atômicas e seguras.
+
+ Enquadramento de Mensagens (Message Framing): O sistema implementa um protocolo próprio sobre TCP para garantir que cada mensagem seja transmitida de forma completa e isolada. Cada mensagem é prefixada com 4 bytes que representam seu tamanho, evitando problemas de fragmentação (quando uma mensagem chega cortada) ou coalescência (quando várias chegam “coladas” em uma só leitura). Isso torna a comunicação muito mais confiável e fácil de depurar.
 
  Tecnologias Utilizadas
 Python (3.8+)
