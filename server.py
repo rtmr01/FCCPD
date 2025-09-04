@@ -1,6 +1,7 @@
-# server.py
+# server.py (compatível com Python 3.8/3.9)
 import socket
 import threading
+from typing import Optional, Dict, Set
 
 HOST = "127.0.0.1"
 PORT = 12345
@@ -8,11 +9,12 @@ PORT = 12345
 HEADER_LEN = 4
 MAX_MSG = 1 << 20  # 1 MB
 
-salas: dict[str, set[socket.socket]] = {
+# Tipagem compatível com 3.8/3.9
+salas: Dict[str, Set[socket.socket]] = {
     "#geral": set(),
     "#jogos": set(),
 }
-clientes: dict[socket.socket, dict] = {}
+clientes: Dict[socket.socket, Dict] = {}
 lock_salas = threading.Lock()
 
 def send_msg(sock: socket.socket, data: bytes) -> None:
@@ -22,10 +24,10 @@ def send_msg(sock: socket.socket, data: bytes) -> None:
 def enviar(sock: socket.socket, texto: str):
     try:
         send_msg(sock, texto.encode("utf-8"))
-    except Exception:
-        pass  # conexão pode já estar fechada
+    except Exception as e:
+        print(f"[ERRO enviar] {e!r}")  # debug
 
-def recv_exactly(sock: socket.socket, n: int) -> bytes | None:
+def recv_exactly(sock: socket.socket, n: int) -> Optional[bytes]:
     buf = bytearray()
     while len(buf) < n:
         chunk = sock.recv(n - len(buf))
@@ -34,7 +36,7 @@ def recv_exactly(sock: socket.socket, n: int) -> bytes | None:
         buf += chunk
     return bytes(buf)
 
-def recv_msg(sock: socket.socket) -> bytes | None:
+def recv_msg(sock: socket.socket) -> Optional[bytes]:
     header = recv_exactly(sock, HEADER_LEN)
     if header is None:
         return None
@@ -44,7 +46,7 @@ def recv_msg(sock: socket.socket) -> bytes | None:
     payload = recv_exactly(sock, size)
     return payload
 
-def broadcast(nome_sala: str, mensagem: str, excluir: socket.socket | None = None):
+def broadcast(nome_sala: str, mensagem: str, excluir: Optional[socket.socket] = None):
     """Envia a 'mensagem' para todos da sala 'nome_sala', exceto 'excluir'."""
     with lock_salas:
         destinatarios = list(salas.get(nome_sala, set()))
@@ -87,17 +89,23 @@ class ClientThread(threading.Thread):
         sock = self.client_socket
         addr = self.client_address
         info = None
+        print(f"[THREAD] Iniciando handler para {addr}")  # debug
 
         try:
+            # 1) Servidor envia a pergunta (framed!)
             enviar(sock, "[SYS] Conectado ao servidor. Informe seu nome de usuário:")
+
+            # 2) Servidor aguarda o nome (framed!)
             nome_bytes = recv_msg(sock)
             if not nome_bytes:
+                print(f"[THREAD] {addr} encerrou antes de enviar o nome.")  # debug
                 enviar(sock, "[SYS] Nome inválido. Encerrando.")
                 sock.close()
                 return
 
             nome = nome_bytes.decode("utf-8", errors="ignore").strip()
             if not nome:
+                print(f"[THREAD] {addr} enviou nome vazio.")  # debug
                 enviar(sock, "[SYS] Nome inválido. Encerrando.")
                 sock.close()
                 return
@@ -112,6 +120,7 @@ class ClientThread(threading.Thread):
             while True:
                 data = recv_msg(sock)
                 if data is None:
+                    print(f"[THREAD] {addr} desconectou (recv_msg=None).")  # debug
                     break
                 msg = data.decode("utf-8", errors="ignore").strip()
                 if not msg:
@@ -155,8 +164,10 @@ class ClientThread(threading.Thread):
                 nome = info["nome"]
                 broadcast(sala, f"[{sala}] {nome}: {msg}", excluir=None)
 
-        except (ConnectionResetError, ConnectionAbortedError):
-            pass
+        except (ConnectionResetError, ConnectionAbortedError) as e:
+            print(f"[THREAD] Conexão com {addr} abortada/resetada: {e!r}")
+        except Exception as e:
+            print(f"[THREAD] Erro inesperado com {addr}: {e!r}")
         finally:
             with lock_salas:
                 info = clientes.pop(sock, None)
@@ -180,7 +191,7 @@ class ClientThread(threading.Thread):
 
 def main():
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # Opcional: reutilizar porta rapidamente em desenvolvimento
+    # Reutilizar porta rapidamente em desenvolvimento
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_socket.bind((HOST, PORT))
     server_socket.listen()

@@ -2,6 +2,7 @@
 import socket
 import threading
 import sys
+from typing import Optional
 
 HOST = "127.0.0.1"
 PORT = 12345
@@ -13,7 +14,7 @@ def send_msg(sock: socket.socket, data: bytes) -> None:
     size = len(data).to_bytes(HEADER_LEN, "big")
     sock.sendall(size + data)
 
-def recv_exactly(sock: socket.socket, n: int) -> bytes | None:
+def recv_exactly(sock: socket.socket, n: int) -> Optional[bytes]:
     buf = bytearray()
     while len(buf) < n:
         chunk = sock.recv(n - len(buf))
@@ -22,7 +23,7 @@ def recv_exactly(sock: socket.socket, n: int) -> bytes | None:
         buf += chunk
     return bytes(buf)
 
-def recv_msg(sock: socket.socket) -> bytes | None:
+def recv_msg(sock: socket.socket) -> Optional[bytes]:
     header = recv_exactly(sock, HEADER_LEN)
     if header is None:
         return None
@@ -41,7 +42,7 @@ def receiver(sock: socket.socket):
                 print("\n[AVISO] Conexão encerrada pelo servidor.")
                 break
             texto = data.decode("utf-8", errors="ignore")
-            # reposiciona o prompt
+            # limpa a linha do prompt e imprime a mensagem recebida
             sys.stdout.write("\r" + " " * 200 + "\r")
             sys.stdout.flush()
             print(texto)
@@ -74,6 +75,7 @@ def main():
             return
         sys.stdout.write(first.decode("utf-8", errors="ignore"))
         sys.stdout.flush()
+
         nome = input().strip()
         send_msg(sock, nome.encode("utf-8"))
 
@@ -84,6 +86,7 @@ def main():
             send_msg(sock, msg.encode("utf-8"))
             if msg.lower().startswith("/quit") or msg.lower() == "sair":
                 break
+
     except KeyboardInterrupt:
         try:
             send_msg(sock, b"/quit")
