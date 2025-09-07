@@ -1,100 +1,101 @@
-# cliente.py
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Cliente de terminal para o servidor de chat.
+Usa o mesmo framing (4 bytes) e oferece uma interface de linha de comando.
+Python 3.11
+"""
+
+from __future__ import annotations
 import socket
+import struct
 import threading
 import sys
-from typing import Optional
 
-HOST = "127.0.0.1"
-PORT = 12345
+_MAX_FRAME = 8 * 1024 * 1024
 
-HEADER_LEN = 4
-MAX_MSG = 1 << 20  # 1 MB de limite defensivo
+def send_frame(conn: socket.socket, text: str) -> None:
+    data = text.encode("utf-8", errors="replace")
+    n = len(data)
+    if n > _MAX_FRAME:
+        raise ValueError("Mensagem excede o tamanho máximo permitido.")
+    header = struct.pack("!I", n)
+    conn.sendall(header + data)
 
-def send_msg(sock: socket.socket, data: bytes) -> None:
-    size = len(data).to_bytes(HEADER_LEN, "big")
-    sock.sendall(size + data)
-
-def recv_exactly(sock: socket.socket, n: int) -> Optional[bytes]:
+def _recv_exact(conn: socket.socket, n: int) -> bytes:
     buf = bytearray()
     while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
+        chunk = conn.recv(n - len(buf))
         if not chunk:
-            return None
-        buf += chunk
+            raise ConnectionError("Conexão encerrada.")
+        buf.extend(chunk)
     return bytes(buf)
 
-def recv_msg(sock: socket.socket) -> Optional[bytes]:
-    header = recv_exactly(sock, HEADER_LEN)
-    if header is None:
+def recv_frame(conn: socket.socket) -> str | None:
+    header = conn.recv(4)
+    if not header:
         return None
-    size = int.from_bytes(header, "big")
-    if size < 0 or size > MAX_MSG:
-        # tamanho inválido ou abusivo
-        return None
-    payload = recv_exactly(sock, size)
-    return payload
+    if len(header) < 4:
+        header += _recv_exact(conn, 4 - len(header))
+    (length,) = struct.unpack("!I", header)
+    if length > _MAX_FRAME:
+        raise ValueError("Frame muito grande.")
+    if length == 0:
+        return ""
+    data = _recv_exact(conn, length)
+    return data.decode("utf-8", errors="replace")
 
-def receiver(sock: socket.socket):
-    while True:
-        try:
-            data = recv_msg(sock)
-            if data is None:
-                print("\n[AVISO] Conexão encerrada pelo servidor.")
-                break
-            texto = data.decode("utf-8", errors="ignore")
-            # limpa a linha do prompt e imprime a mensagem recebida
-            sys.stdout.write("\r" + " " * 200 + "\r")
-            sys.stdout.flush()
-            print(texto)
-            print("Você: ", end="", flush=True)
-        except Exception:
-            break
+def reader_loop(conn: socket.socket):
     try:
-        sock.close()
-    except Exception:
-        pass
-
-def main():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.connect((HOST, PORT))
-    except ConnectionRefusedError:
-        print("[ERRO] Não foi possível conectar ao servidor.")
-        return
-
-    print(f"[OK] Conectado a {HOST}:{PORT}")
-
-    t = threading.Thread(target=receiver, args=(sock,), daemon=True)
-    t.start()
-
-    try:
-        # Handshake: servidor pergunta o nome
-        first = recv_msg(sock)
-        if first is None:
-            print("[ERRO] Servidor encerrou a conexão.")
-            return
-        sys.stdout.write(first.decode("utf-8", errors="ignore"))
-        sys.stdout.flush()
-
-        nome = input().strip()
-        send_msg(sock, nome.encode("utf-8"))
-
         while True:
-            msg = input("Você: ").strip()
-            if not msg:
-                continue
-            send_msg(sock, msg.encode("utf-8"))
-            if msg.lower().startswith("/quit") or msg.lower() == "sair":
+            msg = recv_frame(conn)
+            if msg is None:
+                print("\n[desconectado do servidor]")
                 break
-
-    except KeyboardInterrupt:
-        try:
-            send_msg(sock, b"/quit")
-        except Exception:
-            pass
+            print(msg, end="" if msg.endswith("\n") else "\n")
+    except Exception as e:
+        print(f"\n[erro de recepção: {e}]")
     finally:
         try:
-            sock.close()
+            conn.close()
+        except Exception:
+            pass
+        # encerra o processo caso o lado de leitura termine
+        try:
+            sys.exit(0)
+        except SystemExit:
+            pass
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Cliente de Chat (TCP + framing)")
+    parser.add_argument("--host", default="127.0.0.1", help="Host do servidor (padrão: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=5050, help="Porta do servidor (padrão: 5050)")
+    args = parser.parse_args()
+
+    conn = socket.create_connection((args.host, args.port))
+    print(f"[conectado a {args.host}:{args.port}]")
+    threading.Thread(target=reader_loop, args=(conn,), daemon=True).start()
+
+    try:
+        for line in sys.stdin:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            send_frame(conn, line)
+            if line.strip().lower() == "/quit":
+                break
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        print(f"[erro de envio: {e}]")
+    finally:
+        try:
+            conn.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            conn.close()
         except Exception:
             pass
 

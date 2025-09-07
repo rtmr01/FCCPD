@@ -14,7 +14,7 @@ Sincronização Segura: Uso de Lock para garantir que as operações em recursos
  Enquadramento de Mensagens (Message Framing): O sistema implementa um protocolo próprio sobre TCP para garantir que cada mensagem seja transmitida de forma completa e isolada. Cada mensagem é prefixada com 4 bytes que representam seu tamanho, evitando problemas de fragmentação (quando uma mensagem chega cortada) ou coalescência (quando várias chegam “coladas” em uma só leitura). Isso torna a comunicação muito mais confiável e fácil de depurar.
 
  Tecnologias Utilizadas
-Python (3.8+)
+Python (3.11)
 
 Sockets: Para a comunicação de baixo nível via TCP/IP.
 

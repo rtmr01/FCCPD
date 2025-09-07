@@ -1,211 +1,327 @@
-# server.py (compatível com Python 3.8/3.9)
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Servidor de Chat Multithread com Salas + Message Framing (4 bytes)
+Python 3.11
+"""
+
+from __future__ import annotations
 import socket
+import struct
 import threading
+from dataclasses import dataclass, field
 from typing import Optional, Dict, Set
 
-HOST = "127.0.0.1"
-PORT = 12345
+# =========================
+# Utilitários de Framing
+# =========================
+# Protocolo: cada mensagem enviada é prefixada por 4 bytes (uint32 big-endian)
+# que representam o tamanho exato do payload em bytes (UTF-8).
 
-HEADER_LEN = 4
-MAX_MSG = 1 << 20  # 1 MB
+_MAX_FRAME = 8 * 1024 * 1024  # 8 MiB de limite defensivo
 
-# Tipagem compatível com 3.8/3.9
-salas: Dict[str, Set[socket.socket]] = {
-    "#geral": set(),
-    "#jogos": set(),
-}
-clientes: Dict[socket.socket, Dict] = {}
-lock_salas = threading.Lock()
+def send_frame(conn: socket.socket, text: str) -> None:
+    data = text.encode("utf-8", errors="replace")
+    n = len(data)
+    if n > _MAX_FRAME:
+        raise ValueError("Mensagem excede o tamanho máximo permitido.")
+    header = struct.pack("!I", n)
+    conn.sendall(header + data)
 
-def send_msg(sock: socket.socket, data: bytes) -> None:
-    size = len(data).to_bytes(HEADER_LEN, "big")
-    sock.sendall(size + data)
-
-def enviar(sock: socket.socket, texto: str):
-    try:
-        send_msg(sock, texto.encode("utf-8"))
-    except Exception as e:
-        print(f"[ERRO enviar] {e!r}")  # debug
-
-def recv_exactly(sock: socket.socket, n: int) -> Optional[bytes]:
+def _recv_exact(conn: socket.socket, n: int) -> bytes:
     buf = bytearray()
     while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
+        chunk = conn.recv(n - len(buf))
         if not chunk:
-            return None
-        buf += chunk
+            raise ConnectionError("Conexão encerrada pelo par.")
+        buf.extend(chunk)
     return bytes(buf)
 
-def recv_msg(sock: socket.socket) -> Optional[bytes]:
-    header = recv_exactly(sock, HEADER_LEN)
-    if header is None:
+def recv_frame(conn: socket.socket) -> Optional[str]:
+    # Lê 4 bytes de tamanho; retorna None se conexão fechada graciosamente
+    header = conn.recv(4)
+    if not header:
         return None
-    size = int.from_bytes(header, "big")
-    if size < 0 or size > MAX_MSG:
-        return None
-    payload = recv_exactly(sock, size)
-    return payload
+    if len(header) < 4:
+        # garante leitura do restante caso chegue fragmentado
+        header += _recv_exact(conn, 4 - len(header))
+    (length,) = struct.unpack("!I", header)
+    if length > _MAX_FRAME:
+        raise ValueError("Frame muito grande (possível protocolo inválido).")
+    if length == 0:
+        return ""
+    data = _recv_exact(conn, length)
+    return data.decode("utf-8", errors="replace")
 
-def broadcast(nome_sala: str, mensagem: str, excluir: Optional[socket.socket] = None):
-    """Envia a 'mensagem' para todos da sala 'nome_sala', exceto 'excluir'."""
-    with lock_salas:
-        destinatarios = list(salas.get(nome_sala, set()))
-    for s in destinatarios:
-        if excluir is not None and s is excluir:
-            continue
-        enviar(s, mensagem)
 
-def mover_para_sala(sock: socket.socket, nova_sala: str):
-    """Remove o cliente da sala atual (se houver) e adiciona na nova_sala."""
-    with lock_salas:
-        info = clientes.get(sock)
-        if not info:
-            return
-        sala_atual = info.get("sala")
-        if sala_atual and sala_atual in salas and sock in salas[sala_atual]:
-            salas[sala_atual].remove(sock)
+# =========================
+# Modelo de Cliente
+# =========================
+@dataclass(eq=False)
+class Client:
+    conn: socket.socket
+    addr: tuple[str, int]
+    nickname: str = field(default_factory=lambda: "anon")
+    room: Optional[str] = None
+    alive: bool = True
 
-        if nova_sala not in salas:
-            salas[nova_sala] = set()
+    def send(self, msg: str) -> None:
+        try:
+            send_frame(self.conn, msg)
+        except Exception:
+            # Erros de envio: marcar para cleanup
+            self.alive = False
 
-        salas[nova_sala].add(sock)
-        info["sala"] = nova_sala
 
-    enviar(sock, f"[SYS] Você entrou em {nova_sala}.")
-    broadcast(nova_sala, f"[SYS] {info['nome']} entrou na sala.", excluir=sock)
+# =========================
+# Servidor de Chat
+# =========================
+class ChatServer:
+    def __init__(self, host: str = "0.0.0.0", port: int = 5050):
+        self.host = host
+        self.port = port
+        self.sock: Optional[socket.socket] = None
 
-def listar_salas() -> str:
-    with lock_salas:
-        linhas = [f"{nome} ({len(membros)} conectado(s))" for nome, membros in salas.items()]
-        return "\n".join(linhas) if linhas else "(sem salas)"
+        # Estado compartilhado
+        self.lock = threading.Lock()
+        self.clients: Dict[socket.socket, Client] = {}
+        self.rooms: Dict[str, Set[Client]] = {}  # room -> set(Client)
 
-class ClientThread(threading.Thread):
-    def __init__(self, client_socket: socket.socket, client_address):
-        super().__init__(daemon=True)
-        self.client_socket = client_socket
-        self.client_address = client_address
+        # Para encerrar ordenadamente
+        self._shutdown = threading.Event()
 
-    def run(self):
-        sock = self.client_socket
-        addr = self.client_address
-        info = None
-        print(f"[THREAD] Iniciando handler para {addr}")  # debug
+    # ---------------------
+    # Gestão de Salas
+    # ---------------------
+    def create_room(self, name: str) -> bool:
+        with self.lock:
+            if name in self.rooms:
+                return False
+            self.rooms[name] = set()
+            return True
+
+    def join_room(self, client: Client, room: str) -> str:
+        with self.lock:
+            if room not in self.rooms:
+                # criação dinâmica
+                self.rooms[room] = set()
+            # se já estiver em outra sala, sair
+            if client.room and client in self.rooms.get(client.room, set()):
+                self.rooms[client.room].discard(client)
+                self._broadcast(client.room, f"* {client.nickname} saiu da sala.")
+            # entrar na nova sala
+            self.rooms[room].add(client)
+            client.room = room
+        self._broadcast(room, f"* {client.nickname} entrou na sala.")
+        return room
+
+    def leave_room(self, client: Client) -> None:
+        with self.lock:
+            if client.room and client in self.rooms.get(client.room, set()):
+                room = client.room
+                self.rooms[room].discard(client)
+                client.room = None
+                self._broadcast(room, f"* {client.nickname} saiu da sala.")
+
+    def list_rooms(self) -> str:
+        with self.lock:
+            parts = []
+            for r, members in self.rooms.items():
+                parts.append(f"- {r} ({len(members)} online)")
+            return "Salas:\n" + ("\n".join(parts) if parts else "(nenhuma)")
+
+    # ---------------------
+    # Broadcast
+    # ---------------------
+    def _broadcast(self, room: str, msg: str, *, sender: Optional[Client] = None) -> None:
+        with self.lock:
+            targets = list(self.rooms.get(room, set()))
+        # enviar fora do lock para minimizar contenção; remover desconectados
+        dead: list[Client] = []
+        for c in targets:
+            # não filtra o remetente; UX comum é o remetente também receber
+            c.send(msg)
+            if not c.alive:
+                dead.append(c)
+        if dead:
+            with self.lock:
+                for c in dead:
+                    # limpeza silenciosa
+                    self.rooms.get(room, set()).discard(c)
+                    self.clients.pop(c.conn, None)
+
+    # ---------------------
+    # Loop principal
+    # ---------------------
+    def start(self) -> None:
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # reutilizar endereço rapidamente após reiniciar
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind((self.host, self.port))
+        self.sock.listen()
+        print(f"Servidor escutando em {self.host}:{self.port}")
 
         try:
-            # 1) Servidor envia a pergunta (framed!)
-            enviar(sock, "[SYS] Conectado ao servidor. Informe seu nome de usuário:")
-
-            # 2) Servidor aguarda o nome (framed!)
-            nome_bytes = recv_msg(sock)
-            if not nome_bytes:
-                print(f"[THREAD] {addr} encerrou antes de enviar o nome.")  # debug
-                enviar(sock, "[SYS] Nome inválido. Encerrando.")
-                sock.close()
-                return
-
-            nome = nome_bytes.decode("utf-8", errors="ignore").strip()
-            if not nome:
-                print(f"[THREAD] {addr} enviou nome vazio.")  # debug
-                enviar(sock, "[SYS] Nome inválido. Encerrando.")
-                sock.close()
-                return
-
-            with lock_salas:
-                clientes[sock] = {"nome": nome, "sala": None}
-                info = clientes[sock]
-
-            enviar(sock, f"[SYS] Bem-vindo, {nome}! Use /join <sala>, /list, /quit. Padrão: #geral")
-            mover_para_sala(sock, "#geral")
-
-            while True:
-                data = recv_msg(sock)
-                if data is None:
-                    print(f"[THREAD] {addr} desconectou (recv_msg=None).")  # debug
-                    break
-                msg = data.decode("utf-8", errors="ignore").strip()
-                if not msg:
-                    continue
-
-                if msg.startswith("/"):
-                    partes = msg.split(maxsplit=1)
-                    cmd = partes[0].lower()
-
-                    if cmd == "/join":
-                        if len(partes) == 1:
-                            enviar(sock, "[SYS] Uso: /join <nome_da_sala>")
-                            continue
-                        destino = partes[1].strip()
-                        if not destino.startswith("#"):
-                            destino = "#" + destino
-                        old_info = clientes.get(sock, {})
-                        antiga = old_info.get("sala")
-
-                        mover_para_sala(sock, destino)
-                        if antiga and antiga != destino:
-                            broadcast(antiga, f"[SYS] {old_info['nome']} saiu da sala.")
-
-                    elif cmd == "/list":
-                        enviar(sock, "[SYS] Salas disponíveis:\n" + listar_salas())
-
-                    elif cmd == "/quit":
-                        enviar(sock, "[SYS] Desconectando...")
-                        break
-
-                    else:
-                        enviar(sock, "[SYS] Comando não reconhecido. Use /join, /list, /quit.")
-                    continue
-
-                info = clientes.get(sock)
-                if not info or not info.get("sala"):
-                    enviar(sock, "[SYS] Você não está em nenhuma sala. Use /join <sala>.")
-                    continue
-
-                sala = info["sala"]
-                nome = info["nome"]
-                broadcast(sala, f"[{sala}] {nome}: {msg}", excluir=None)
-
-        except (ConnectionResetError, ConnectionAbortedError) as e:
-            print(f"[THREAD] Conexão com {addr} abortada/resetada: {e!r}")
-        except Exception as e:
-            print(f"[THREAD] Erro inesperado com {addr}: {e!r}")
+            while not self._shutdown.is_set():
+                conn, addr = self.sock.accept()
+                client = Client(conn=conn, addr=addr)
+                with self.lock:
+                    self.clients[conn] = client
+                threading.Thread(target=self._handle_client, args=(client,), daemon=True).start()
         finally:
-            with lock_salas:
-                info = clientes.pop(sock, None)
-                if info:
-                    sala = info.get("sala")
-                    if sala in salas and sock in salas[sala]:
-                        salas[sala].remove(sock)
-                # remove salas vazias (exceto padrões)
-                for sala_nome in list(salas.keys()):
-                    if sala_nome not in ("#geral", "#jogos") and len(salas[sala_nome]) == 0:
-                        salas.pop(sala_nome, None)
+            self.shutdown()
 
-            if info and info.get("sala"):
-                broadcast(info["sala"], f"[SYS] {info['nome']} desconectou.", excluir=sock)
-
+    def shutdown(self) -> None:
+        self._shutdown.set()
+        if self.sock:
             try:
-                sock.close()
+                self.sock.close()
             except Exception:
                 pass
-            print(f"[CONEXÃO ENCERRADA] {addr} desconectou.")
+        # finalizar clientes
+        with self.lock:
+            clients = list(self.clients.values())
+        for c in clients:
+            try:
+                c.conn.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
+                c.conn.close()
+            except Exception:
+                pass
 
-def main():
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # Reutilizar porta rapidamente em desenvolvimento
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.bind((HOST, PORT))
-    server_socket.listen()
-    print(f"[ESCUTANDO] Servidor em {HOST}:{PORT}")
+    # ---------------------
+    # Tratamento por cliente
+    # ---------------------
+    def _handle_client(self, client: Client) -> None:
+        # Mensagem de boas-vindas e ajuda inicial
+        client.send(
+            "Bem-vindo ao servidor de chat!\n"
+            "Use /help para ver os comandos. Defina um apelido com /nick <nome>.\n"
+        )
+        try:
+            while client.alive and not self._shutdown.is_set():
+                msg = recv_frame(client.conn)
+                if msg is None:
+                    break  # cliente encerrou
+                msg = msg.strip()
+                if not msg:
+                    continue
+                if msg.startswith("/"):
+                    self._handle_command(client, msg)
+                else:
+                    # mensagem normal vai para a sala atual
+                    if not client.room:
+                        client.send("! Você não está em nenhuma sala. Use /join <sala>.\n")
+                        continue
+                    self._broadcast(client.room, f"[{client.room}] {client.nickname}: {msg}", sender=client)
+        except (ConnectionError, OSError):
+            pass
+        except Exception as e:
+            client.send(f"! Erro: {e}\n")
+        finally:
+            # cleanup
+            self.leave_room(client)
+            with self.lock:
+                self.clients.pop(client.conn, None)
+            try:
+                client.conn.close()
+            except Exception:
+                pass
 
-    try:
-        while True:
-            client_socket, client_address = server_socket.accept()
-            print(f"[NOVA CONEXÃO] {client_address} conectado.")
-            ClientThread(client_socket, client_address).start()
-    except KeyboardInterrupt:
-        print("\n[SYS] Encerrando servidor...")
-    finally:
-        server_socket.close()
+    # ---------------------
+    # Comandos
+    # ---------------------
+    def _handle_command(self, client: Client, line: str) -> None:
+        parts = line.split()
+        cmd = parts[0].lower()
 
+        if cmd in ("/help", "/h", "/?"):
+            client.send(
+                "Comandos disponíveis:\n"
+                "  /help                 Mostra esta ajuda\n"
+                "  /nick <nome>          Define seu apelido\n"
+                "  /create <sala>        Cria uma sala (se não existir)\n"
+                "  /join <sala>          Entra (ou cria e entra) em uma sala\n"
+                "  /rooms                Lista as salas ativas\n"
+                "  /leave                Sai da sala atual\n"
+                "  /quit                 Desconecta do servidor\n"
+                "Mensagens sem '/' são enviadas à sua sala atual.\n"
+            )
+            return
+
+        if cmd == "/nick":
+            if len(parts) < 2:
+                client.send("Uso: /nick <nome>\n")
+                return
+            new = parts[1][:32]
+            with self.lock:
+                old = client.nickname
+                client.nickname = new
+            client.send(f"Apelido alterado: {old} -> {new}\n")
+            if client.room:
+                self._broadcast(client.room, f"* {old} agora é {new}.")
+            return
+
+        if cmd == "/create":
+            if len(parts) < 2:
+                client.send("Uso: /create <sala>\n")
+                return
+            room = parts[1][:48]
+            created = self.create_room(room)
+            if created:
+                client.send(f"Sala criada: {room}\n")
+            else:
+                client.send(f"Sala '{room}' já existe.\n")
+            return
+
+        if cmd == "/join":
+            if len(parts) < 2:
+                client.send("Uso: /join <sala>\n")
+                return
+            room = parts[1][:48]
+            joined = self.join_room(client, room)
+            client.send(f"Entrou na sala: {joined}\n")
+            return
+
+        if cmd == "/rooms":
+            client.send(self.list_rooms() + "\n")
+            return
+
+        if cmd == "/leave":
+            if not client.room:
+                client.send("Você não está em nenhuma sala.\n")
+                return
+            self.leave_room(client)
+            client.send("Você saiu da sala.\n")
+            return
+
+        if cmd == "/quit":
+            client.send("Até mais!\n")
+            client.alive = False
+            try:
+                client.conn.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            return
+
+        client.send(f"Comando desconhecido: {cmd}. Use /help.\n")
+
+
+# =========================
+# Execução direta
+# =========================
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser(description="Servidor de Chat com Salas (TCP + framing)")
+    parser.add_argument("--host", default="0.0.0.0", help="Endereço para escutar (padrão: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=5050, help="Porta (padrão: 5050)")
+    args = parser.parse_args()
+
+    server = ChatServer(host=args.host, port=args.port)
+    try:
+        server.start()
+    except KeyboardInterrupt:
+        print("\nEncerrando servidor...")
+        server.shutdown()
