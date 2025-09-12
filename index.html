@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <title>Chat TCP • Interface Web</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #121933;
+      --muted: #8aa0ffcc;
+      --text: #e9edff;
+      --accent: #6ea8fe;
+      --ok: #2ecc71;
+      --warn: #ffb020;
+      --err: #ff5470;
+      --chip: #1c2550;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; background: linear-gradient(180deg, #090f1d, #0d1530);
+      color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+      display: grid; place-items: center; padding: 12px;
+    }
+    .app {
+      width: min(980px, 100%); display: grid; gap: 12px;
+    }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      background: var(--panel); padding: 12px 14px; border-radius: 16px;
+      box-shadow: 0 6px 24px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.04);
+    }
+    header .title { font-weight: 700; letter-spacing: .2px }
+    header .status {
+      display: inline-flex; align-items: center; gap: 8px; font-size: .9rem; opacity: .9;
+    }
+    .dot {
+      width: 10px; height: 10px; border-radius: 999px; background: #777;
+      box-shadow: 0 0 0 2px rgba(255,255,255,.06) inset;
+    }
+    .dot.ok { background: var(--ok); }
+    .dot.err { background: var(--err); }
+    .panel {
+      background: var(--panel); border-radius: 16px; padding: 12px;
+      box-shadow: 0 6px 24px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.04);
+    }
+    .row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; }
+    .row .field { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    @media (max-width: 720px) {
+      .row { grid-template-columns: 1fr; }
+      .row .field { grid-template-columns: 1fr 1fr; }
+    }
+    input, button, select {
+      appearance: none; border: 1px solid rgba(255,255,255,.08);
+      background: #0f1630; color: var(--text); border-radius: 12px;
+      padding: 10px 12px; font-size: 0.95rem;
+      box-shadow: 0 2px 0 rgba(255,255,255,.03) inset;
+    }
+    input::placeholder { color: #acb6ff80; }
+    button {
+      background: linear-gradient(180deg, #2b3a75, #203063);
+      cursor: pointer; font-weight: 600;
+      transition: transform .06s ease, filter .2s ease;
+    }
+    button:hover { filter: brightness(1.05); }
+    button:active { transform: translateY(1px); }
+    button.secondary { background: #16204a; }
+    .chat {
+      display: grid; grid-template-rows: minmax(320px, 56vh) auto; gap: 8px;
+    }
+    .log {
+      background: #0a0f24; border-radius: 12px; padding: 10px;
+      overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      line-height: 1.35; border: 1px solid rgba(255,255,255,.06);
+    }
+    .msg { padding: 6px 8px; border-radius: 8px; }
+    .msg.server { color: var(--muted); }
+    .msg.me { background: rgba(110,168,254,.08); }
+    .msg.room { color: #a3b2ff; }
+    .composer { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+    textarea {
+      resize: vertical; min-height: 48px; max-height: 30vh;
+      background: #0f1630; color: var(--text); border: 1px solid rgba(255,255,255,.08);
+      border-radius: 12px; padding: 10px 12px; font-size: .98rem;
+    }
+    .chips { display:flex; flex-wrap: wrap; gap:8px; margin-top:6px; }
+    .chip {
+      background: var(--chip); border: 1px solid rgba(255,255,255,.06);
+      padding: 6px 10px; border-radius: 999px; font-size: .85rem; opacity: .9;
+    }
+    .hint { font-size:.9rem; color:#a7b7ffb3; }
+    footer { text-align: center; opacity: .7; font-size: .85rem; }
+    code.kbd { background:#0b1330; border:1px solid rgba(255,255,255,.08); padding:.1rem .4rem; border-radius:6px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="title">Chat TCP — Interface Web</div>
+      <div class="status"><span id="dot" class="dot"></span><span id="status">desconectado</span></div>
+    </header>
+
+    <div class="panel">
+      <div class="row">
+        <div class="field">
+          <input id="wsUrl" placeholder="ws://localhost:8765" />
+          <input id="nick" placeholder="apelido (ex: ana)" />
+          <input id="room" placeholder="sala (ex: geral)" />
+        </div>
+        <button id="btnConnect">Conectar</button>
+        <button id="btnDisconnect" class="secondary">Desconectar</button>
+      </div>
+      <div class="chips">
+        <span class="chip hint">Dica: depois de conectar, use <code class="kbd">/nick seuNome</code>, <code class="kbd">/join sala</code>, <code class="kbd">/help</code></span>
+      </div>
+    </div>
+
+    <div class="panel chat">
+      <div id="log" class="log" aria-live="polite"></div>
+      <div class="composer">
+        <textarea id="input" placeholder="Digite e Enter para enviar (Shift+Enter = nova linha)"></textarea>
+        <button id="btnSend">Enviar</button>
+      </div>
+    </div>
+
+    <footer>Conecta em um bridge WebSocket local que traduz para o seu servidor TCP com framing.</footer>
+  </div>
+
+  <script>
+    let ws = null;
+    const $ = (s, r=document) => r.querySelector(s);
+    const logEl = $('#log');
+    const dotEl = $('#dot');
+    const statusEl = $('#status');
+    const wsUrlEl = $('#wsUrl');
+    const nickEl = $('#nick');
+    const roomEl = $('#room');
+    const inputEl = $('#input');
+
+    function setStatus(txt, ok=false, err=false) {
+      statusEl.textContent = txt;
+      dotEl.className = 'dot ' + (ok ? 'ok' : err ? 'err' : '');
+    }
+    function addMsg(text, cls='') {
+      const line = document.createElement('div');
+      line.className = 'msg ' + cls;
+      line.textContent = text;
+      logEl.appendChild(line);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    function send(text) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(text);
+      addMsg(text, 'me');
+    }
+
+    function connect() {
+      const url = wsUrlEl.value.trim() || 'ws://localhost:8765';
+      ws = new WebSocket(url);
+      ws.addEventListener('open', () => {
+        setStatus('conectado', true);
+        addMsg(`[web] conectado a ${url}`, 'server');
+
+        // se usuário já preencheu apelido/sala, manda comandos
+        const nick = nickEl.value.trim();
+        const room = roomEl.value.trim();
+        if (nick) ws.send(`/nick ${nick}`);
+        if (room) ws.send(`/join ${room}`);
+      });
+      ws.addEventListener('message', (ev) => {
+        const text = typeof ev.data === 'string' ? ev.data : '[binário]';
+        // Heurística simples para destacar mensagens da sala
+        if (text.startsWith('[')) addMsg(text, 'room');
+        else addMsg(text, 'server');
+      });
+      ws.addEventListener('close', () => {
+        setStatus('desconectado');
+        addMsg('[web] conexão encerrada', 'server');
+      });
+      ws.addEventListener('error', (e) => {
+        setStatus('erro', false, true);
+        addMsg('[web] erro na conexão WebSocket', 'server');
+      });
+    }
+
+    function disconnect() {
+      if (ws) {
+        try { ws.close(); } catch {}
+      }
+    }
+
+    // UI
+    $('#btnConnect').addEventListener('click', connect);
+    $('#btnDisconnect').addEventListener('click', disconnect);
+    $('#btnSend').addEventListener('click', () => {
+      const t = inputEl.value;
+      if (!t.trim()) return;
+      send(t);
+      inputEl.value = '';
+      inputEl.focus();
+    });
+    inputEl.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' && !ev.shiftKey) {
+        ev.preventDefault();
+        $('#btnSend').click();
+      }
+    });
+
+    // defaults
+    wsUrlEl.value = 'ws://localhost:8765';
+  </script>
+</body>
+</html>
