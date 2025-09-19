@@ -17,9 +17,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Set, Tuple, List
 
-# =========================
-# Utilitários de Framing
-# =========================
+
 _MAX_FRAME = 8 * 1024 * 1024  # 8 MB
 
 def send_frame(conn: socket.socket, text: str) -> None:
@@ -54,9 +52,7 @@ def recv_frame(conn: socket.socket) -> Optional[str]:
     return data.decode("utf-8", errors="replace")
 
 
-# =========================
-# Modelo de Cliente
-# =========================
+
 @dataclass(eq=False)
 class Client:
     conn: socket.socket
@@ -72,9 +68,7 @@ class Client:
             self.alive = False
 
 
-# =========================
-# Servidor de Chat
-# =========================
+
 class ChatServer:
     def __init__(
         self,
@@ -88,21 +82,19 @@ class ChatServer:
         self.port = port
         self.sock: Optional[socket.socket] = None
 
-        # Estado compartilhado
+        
         self.lock = threading.Lock()
         self.clients: Dict[socket.socket, Client] = {}
         self.rooms: Dict[str, Set[Client]] = {}
 
-        # Encerramento ordenado
+       
         self._shutdown = threading.Event()
 
-        # Logging
+      
         self.log = logger or logging.getLogger("chatserver")
         self.max_log_chars = max_log_chars
 
-    # ---------------------
-    # Helpers de log
-    # ---------------------
+    
     def _clip(self, s: str) -> str:
         if s is None:
             return ""
@@ -113,9 +105,7 @@ class ChatServer:
     def _client_id(self, c: Client) -> str:
         return f"{c.addr[0]}:{c.addr[1]}|{c.nickname or 'anon'}"
 
-    # ---------------------
-    # Gestão de Salas
-    # ---------------------
+    
     def create_room(self, name: str) -> bool:
         with self.lock:
             if name in self.rooms:
@@ -132,7 +122,6 @@ class ChatServer:
                 self.rooms[room] = set()
                 self.log.info("room_created (auto) room=%s by=%s", room, self._client_id(client))
 
-            # Se já estava em outra sala, remove sob lock e só avisa depois
             if client.room and client in self.rooms.get(client.room, set()):
                 prev_to_notify = client.room
                 self.rooms[client.room].discard(client)
@@ -142,7 +131,7 @@ class ChatServer:
             client.room = room
             joined_room = room
 
-        # ---- fora do lock ----
+      
         if prev_to_notify:
             self._broadcast(prev_to_notify, f"* {client.nickname} saiu da sala.")
         self._broadcast(joined_room, f"* {client.nickname} entrou na sala.")
@@ -158,7 +147,7 @@ class ChatServer:
                 client.room = None
                 self.log.info("room_leave room=%s client=%s", room_to_notify, self._client_id(client))
 
-        # ---- fora do lock ----
+        
         if room_to_notify:
             self._broadcast(room_to_notify, f"* {client.nickname} saiu da sala.")
 
@@ -168,9 +157,7 @@ class ChatServer:
         self.log.debug("rooms_list count=%d", len(parts))
         return "Salas:\n" + ("\n".join(parts) if parts else "(nenhuma)")
 
-    # ---------------------
-    # Broadcast
-    # ---------------------
+   
     def _broadcast(self, room: str, msg: str, *, sender: Optional[Client] = None) -> None:
         with self.lock:
             targets = list(self.rooms.get(room, set()))
@@ -191,9 +178,7 @@ class ChatServer:
             self._clip(msg),
         )
 
-    # ---------------------
-    # Loop principal
-    # ---------------------
+    
     def start(self) -> None:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -243,9 +228,7 @@ class ChatServer:
                 pass
         self.log.info("server_shutdown_complete active_clients=%d", len(clients))
 
-    # ---------------------
-    # Tratamento por cliente
-    # ---------------------
+   
     def _handle_client(self, client: Client) -> None:
         client.send(
             "Bem-vindo ao servidor de chat!\n"
@@ -281,7 +264,7 @@ class ChatServer:
             client.send("! Erro interno no servidor.\n")
             self.log.exception("client_exception %s", self._client_id(client))
         finally:
-            # garante remoção limpa
+            
             self.leave_room(client)
             with self.lock:
                 self.clients.pop(client.conn, None)
@@ -291,9 +274,7 @@ class ChatServer:
                 pass
             self.log.info("client_handler_end %s", self._client_id(client))
 
-    # ---------------------
-    # Comandos
-    # ---------------------
+    
     def _handle_command(self, client: Client, line: str) -> None:
         parts = line.split()
         cmd = parts[0].lower()
@@ -386,9 +367,7 @@ class ChatServer:
         self.log.warning("unknown_command %s cmd=%s", self._client_id(client), cmd)
 
 
-# =========================
-# Setup de logging + Execução
-# =========================
+
 def _setup_logger(log_file: Optional[str], level: str, json_mode: bool,
                   rotate_mb: int, backups: int) -> logging.Logger:
     logger = logging.getLogger("chatserver")

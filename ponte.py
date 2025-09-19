@@ -17,17 +17,13 @@ import argparse
 import contextlib
 from typing import Optional
 
-import websockets  # pip install websockets
-
-# ============================================================
-# Parâmetros
-# ============================================================
-_MAX_FRAME = 8 * 1024 * 1024  # 8 MB – deve casar com o servidor TCP
+import websockets  
 
 
-# ============================================================
-# Utilitários de framing (iguais ao servidor)
-# ============================================================
+_MAX_FRAME = 8 * 1024 * 1024  
+
+
+
 def send_frame(conn: socket.socket, text: str) -> None:
     data = text.encode("utf-8", errors="replace")
     n = len(data)
@@ -62,9 +58,7 @@ def recv_frame(conn: socket.socket) -> Optional[str]:
     return data.decode("utf-8", errors="replace")
 
 
-# ============================================================
-# Conexão TCP para o chat
-# ============================================================
+
 class TCPChatConn:
     def __init__(self, host: str, port: int):
         self.host = host
@@ -72,7 +66,6 @@ class TCPChatConn:
         self.sock: Optional[socket.socket] = None
 
     def connect(self) -> None:
-        # Socket BLOQUEANTE (padrão). O I/O roda em executor de threads.
         self.sock = socket.create_connection((self.host, self.port))
 
     def close(self) -> None:
@@ -85,9 +78,7 @@ class TCPChatConn:
         self.sock = None
 
 
-# ============================================================
-# Handler WS <-> TCP
-# ============================================================
+
 async def ws_handler(ws, chat_host: str, chat_port: int) -> None:
     """
     Para cada cliente WebSocket criamos uma conexão TCP dedicada ao servidor de chat.
@@ -96,12 +87,12 @@ async def ws_handler(ws, chat_host: str, chat_port: int) -> None:
     tcp = TCPChatConn(chat_host, chat_port)
     loop = asyncio.get_running_loop()
 
-    # Conecta ao servidor TCP
+
     try:
         tcp.connect()
         await ws.send(f"[bridge] conectado ao chat TCP {chat_host}:{chat_port}")
     except Exception as e:
-        # Se não conseguiu conectar ao TCP, encerra o WS.
+       
         with contextlib.suppress(Exception):
             await ws.send(f"[bridge] falha ao conectar no chat {chat_host}:{chat_port} -> {e}")
         with contextlib.suppress(Exception):
@@ -168,9 +159,7 @@ async def ws_handler(ws, chat_host: str, chat_port: int) -> None:
         await ws.close()
 
 
-# ============================================================
-# Bootstrap
-# ============================================================
+
 async def amain() -> None:
     parser = argparse.ArgumentParser(description="Bridge WebSocket <-> TCP (framing) para ChatServer")
     parser.add_argument("--ws-host", default="0.0.0.0")
@@ -183,8 +172,7 @@ async def amain() -> None:
 
     print(f"[bridge] WS em ws://{args.ws_host}:{args.ws_port} -> TCP {args.chat_host}:{args.chat_port}")
 
-    # Observação: max_size limita o payload do **próprio** WebSocket. Como nosso
-    # protocolo via bridge manda texto puro, usar _MAX_FRAME+8 é seguro.
+    
     async with websockets.serve(
         lambda ws: ws_handler(ws, args.chat_host, args.chat_port),
         args.ws_host,
@@ -193,7 +181,7 @@ async def amain() -> None:
         ping_timeout=args.ping_timeout,
         max_size=_MAX_FRAME + 8,
     ):
-        # Mantém o servidor ativo
+        
         await asyncio.Future()
 
 
