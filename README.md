@@ -65,6 +65,32 @@ python3 cliente.py
 
 Após conectar, você entrará automaticamente na sala padrão #geral. Você pode interagir com o chat através dos seguintes comandos:
 
+## 🚀 Uso via Navegador (Interface Web)
+
+Além do cliente de terminal (`cliente.py`), o sistema também possui uma interface web (`index.html`) que pode ser acessada diretamente pelo navegador.
+
+### Passo 1: Iniciar o Servidor TCP
+```bash
+python3 server.py
+
+Passo 2: Iniciar a Ponte WebSocket
+
+python3 ponte.py --ws-host 0.0.0.0 --ws-port 8765
+Passo 3: Abrir o Chat no Navegador
+
+Abra o arquivo index.html no navegador.
+
+Informe:
+
+URL do WebSocket (ex: ws://localhost:8765)
+
+Apelido (ex: ana)
+
+Sala (ex: geral)
+
+Clique em Conectar e use o chat diretamente no browser.
+
+
 | Comando	          | Descrição	                                                           | Exemplo      |
 |-------------------|----------------------------------------------------------------------|--------------|
 | /join ≺sala≻     | Entra em uma sala existente ou cria uma nova se ela não existir.     |	/join #jogos |
