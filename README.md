@@ -70,7 +70,7 @@ Após conectar, você entrará automaticamente na sala padrão #geral. Você pod
 Além do cliente de terminal (`cliente.py`), o sistema também possui uma interface web (`index.html`) que pode ser acessada diretamente pelo navegador.
 
 ### Passo 1: Iniciar o Servidor TCP
-```bash
+
 python3 server.py
 
 Passo 2: Iniciar a Ponte WebSocket
