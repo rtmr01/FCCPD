@@ -91,12 +91,18 @@ Sala (ex: geral)
 Clique em Conectar e use o chat diretamente no browser.
 
 
-| Comando	          | Descrição	                                                           | Exemplo      |
-|-------------------|----------------------------------------------------------------------|--------------|
-| /join ≺sala≻     | Entra em uma sala existente ou cria uma nova se ela não existir.     |	/join #jogos |
-| /list	            | Lista todas as salas ativas no servidor e o número de participantes. |	/list        |
-| /quit ou sair	    | Desconecta o cliente do servidor.	                                   | /quit        |
-| ≺qualquer texto≻ |	Envia uma mensagem para todos os membros da sala em que você está.	  | Olá a todos! |
+| **Comando**      | **Descrição**                                                                   | **Exemplo de Uso** |
+| ---------------- | ------------------------------------------------------------------------------- | ------------------ |
+| `/help`          | Exibe todos os comandos disponíveis e instruções básicas de uso.                | `/help`            |
+| `/nick <nome>`   | Define ou altera o seu apelido (nickname) visível aos outros usuários.          | `/nick Matheus`    |
+| `/create <sala>` | Cria uma nova sala de chat (caso ainda não exista).                             | `/create #geral`   |
+| `/join <sala>`   | Entra em uma sala existente ou cria e entra automaticamente se ela não existir. | `/join #jogos`     |
+| `/rooms`         | Lista todas as salas ativas e o número de participantes em cada uma.            | `/rooms`           |
+| `/leave`         | Sai da sala atual (sem desconectar do servidor).                                | `/leave`           |
+| `/who`           | Mostra a lista de membros conectados na sala atual.                             | `/who`             |
+| `/quit`          | Encerra a conexão com o servidor de chat.                                       | `/quit`            |
+| `<mensagem>`     | Envia uma mensagem para todos os usuários da sala atual.                        | Olá, pessoal! 👋   |
+
 
 ## Passo 4: Encerrar a Execução
 
